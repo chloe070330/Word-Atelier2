@@ -122,11 +122,15 @@ h1,h2,h3,h4,p{margin:0}
 .chip.gold{background:rgba(214,170,95,.10);border-color:rgba(214,170,95,.25)}
 .chip.good{background:rgba(96,211,148,.11);border-color:rgba(96,211,148,.25)}
 .lookup-box{display:grid;gap:10px;padding:14px;border-radius:22px;border:1px solid rgba(255,217,166,.16);background:rgba(255,255,255,.03)}
+.calendar-nav{display:flex;gap:8px;align-items:center}
+.calendar-nav .btn{min-width:36px;padding:7px 10px}
 .calendar{display:grid;grid-template-columns:repeat(7,1fr);gap:7px}
-.calendar-day{min-height:42px;border-radius:14px;display:grid;place-items:center;background:rgba(255,255,255,.035);box-shadow:none;color:var(--muted)}
+.calendar-day{min-height:42px;border-radius:14px;display:grid;place-items:center;position:relative;background:rgba(255,255,255,.035);box-shadow:none;color:var(--muted)}
 .calendar-day.head{min-height:auto;border:0;background:transparent;box-shadow:none;color:var(--soft);font-size:12px}
 .calendar-day.done{color:#26100f;background:linear-gradient(135deg,var(--peach),var(--pink2) 48%,var(--cream));border-color:transparent;font-weight:800;box-shadow:0 12px 28px rgba(255,193,214,.18)}
-.calendar-day.today{border-color:rgba(255,193,214,.45);color:var(--text)}
+.calendar-day.opened::after{content:"";position:absolute;bottom:6px;width:5px;height:5px;border-radius:50%;background:#d5aeb5;box-shadow:0 0 0 3px rgba(213,174,181,.16)}
+.calendar-day.today{color:#fff;background:#d5aeb5;border-color:transparent;font-weight:900;box-shadow:0 14px 30px rgba(213,174,181,.28)}
+.calendar-day.today::after{background:#fff;box-shadow:0 0 0 3px rgba(255,255,255,.20)}
 .steps{display:grid;gap:14px}
 .step{display:none}
 .step.active{display:grid;gap:12px}
@@ -154,8 +158,13 @@ h1,h2,h3,h4,p{margin:0}
   const $ = (id) => document.getElementById(id);
   const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
   const tidy = (v) => String(v ?? '').trim();
-  const today = () => new Date().toISOString().slice(0, 10);
-  const day = (v) => String(v || '').slice(0, 10);
+  const localDay = (v = new Date()) => {
+    const d = v instanceof Date ? v : new Date(v);
+    if (Number.isNaN(d.getTime())) return '';
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  };
+  const today = () => localDay();
+  const day = (v) => localDay(v);
   const wordKey = (v) => tidy(v).toLowerCase().replace(/\s+/g, ' ');
   const cleanAnswer = (v) => tidy(v).toLowerCase().replace(/[\s·,.;，。；、/|()（）【】\[\]{}<>!?！？'"“”‘’:\-]+/g, '');
   const splitText = (v) => [...new Set(tidy(v).split(/[\n,;；、\/|]+/).map(tidy).filter(Boolean))];
@@ -283,7 +292,7 @@ h1,h2,h3,h4,p{margin:0}
 
   function defaults() {
     return {
-      page:'home', selectedId:'', editId:'', sort:'time', mistakeSort:'time', search:'',
+      page:'home', selectedId:'', editId:'', sort:'time', mistakeSort:'time', search:'', calendarMonth:today().slice(0, 7),
       records:[], mistakes:[], studyLog:{},
       study:{step:1, source:'all', range:'all', date:'', order:'time', mode:'cn-en', deck:[], answers:{}, graded:false, right:0, wrong:0, summary:'', startedAt:''}
     };
@@ -346,7 +355,7 @@ h1,h2,h3,h4,p{margin:0}
         if (Array.isArray(src.mistakes)) merged.mistakes.push(...src.mistakes);
         if (src.studyLog && typeof src.studyLog === 'object') merged.studyLog = {...merged.studyLog, ...src.studyLog};
         if (src.study) merged.study = {...merged.study, ...src.study, step:1, deck:[], answers:{}, graded:false};
-        ['page','selectedId','editId','sort','mistakeSort','search'].forEach((k) => { if (src[k]) merged[k] = src[k]; });
+        ['page','selectedId','editId','sort','mistakeSort','search','calendarMonth'].forEach((k) => { if (src[k]) merged[k] = src[k]; });
       }
       merged.records = records.sort((a,b) => new Date(b.updatedAt) - new Date(a.updatedAt));
       merged.mistakes = mergeMistakes(merged.mistakes);
@@ -462,7 +471,15 @@ h1,h2,h3,h4,p{margin:0}
               </div>
               <div class="hero-side">
                 <div class="panel stack">
-                  <div class="head"><h3>本月学习</h3><span class="tiny" id="monthName"></span></div>
+                  <div class="head">
+                    <h3>学习日历</h3>
+                    <div class="calendar-nav">
+                      <button class="btn" id="calPrev" title="上个月">‹</button>
+                      <span class="tiny" id="monthName"></span>
+                      <button class="btn" id="calNext" title="下个月">›</button>
+                    </div>
+                  </div>
+                  <div class="tiny" id="calendarHint"></div>
                   <div class="calendar" id="calendar"></div>
                 </div>
                 <div class="image-tile sea"></div>
@@ -631,9 +648,11 @@ h1,h2,h3,h4,p{margin:0}
   }
 
   function renderCalendar() {
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = now.getMonth();
+    const [rawYear, rawMonth] = String(state.calendarMonth || today().slice(0, 7)).split('-').map(Number);
+    const year = Number.isFinite(rawYear) ? rawYear : new Date().getFullYear();
+    const month = Number.isFinite(rawMonth) ? rawMonth - 1 : new Date().getMonth();
+    const monthKey = `${year}-${String(month + 1).padStart(2, '0')}`;
+    state.calendarMonth = monthKey;
     $('monthName').textContent = `${year}.${String(month + 1).padStart(2, '0')}`;
     const first = new Date(year, month, 1);
     const days = new Date(year, month + 1, 0).getDate();
@@ -644,12 +663,35 @@ h1,h2,h3,h4,p{margin:0}
       const date = `${year}-${String(month + 1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
       const cls = ['calendar-day'];
       const log = state.studyLog[date] || {};
+      const recordCount = state.records.filter((r) => day(r.createdAt) === date).length;
+      const studied = Number(log.count || 0);
+      const opened = Boolean(log.openedAt || log.opened);
+      if (Number(log.studySeconds || 0) >= 1800 || studied || recordCount || opened) cls.push('opened');
       if (Number(log.studySeconds || 0) >= 1800) cls.push('done');
       if (date === today()) cls.push('today');
       const minutes = Math.floor(Number(log.studySeconds || 0) / 60);
-      cells.push(`<div class="${cls.join(' ')}" title="${minutes ? `已学习 ${minutes} 分钟` : ''}">${d}</div>`);
+      const title = `${date} · 记录 ${recordCount} 个 · 答题 ${studied} 个${minutes ? ` · 学习 ${minutes} 分钟` : ''}${opened ? ' · 已打开' : ''}`;
+      cells.push(`<div class="${cls.join(' ')}" title="${esc(title)}">${d}</div>`);
     }
     $('calendar').innerHTML = cells.join('');
+    const shownToday = monthKey === today().slice(0, 7);
+    $('calendarHint').textContent = shownToday ? '今日已自动标记。' : '可切换月份查看历史记录。';
+  }
+
+  function shiftCalendar(delta) {
+    const [rawYear, rawMonth] = String(state.calendarMonth || today().slice(0, 7)).split('-').map(Number);
+    const d = new Date(Number.isFinite(rawYear) ? rawYear : new Date().getFullYear(), Number.isFinite(rawMonth) ? rawMonth - 1 : new Date().getMonth(), 1);
+    d.setMonth(d.getMonth() + delta);
+    state.calendarMonth = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    saveNow();
+    renderCalendar();
+  }
+
+  function markTodayOpen() {
+    const date = today();
+    const old = state.studyLog[date] || {};
+    state.studyLog[date] = {...old, date, opened:true, openedAt:old.openedAt || new Date().toISOString(), lastOpenedAt:new Date().toISOString()};
+    if (!state.calendarMonth) state.calendarMonth = date.slice(0, 7);
   }
 
   function renderHistory() {
@@ -806,7 +848,7 @@ h1,h2,h3,h4,p{margin:0}
     const raw = tidy(text);
     if (!raw) return '';
     try {
-      const data = await fetchJson(`https://dict.youdao.com/suggest?q=${encodeURIComponent(raw)}&num=5&doctype=json`, signal, 4500);
+      const data = await fetchJson(`https://dict.youdao.com/suggest?q=${encodeURIComponent(raw)}&num=5&doctype=json`, signal, 2200);
       const entries = Array.isArray(data?.data?.entries) ? data.data.entries : [];
       const exact = entries.find((item) => wordKey(item.entry) === wordKey(raw)) || entries[0] || {};
       return tidy(exact.explain || '');
@@ -827,7 +869,7 @@ h1,h2,h3,h4,p{margin:0}
   }
 
   async function translateMeanings(word, definitions = [], signal) {
-    const tasks = [translateYoudao(word, signal), translateGoogle(word, signal), translateMemory(word, signal)];
+    const tasks = [translateYoudao(word, signal)];
     const settled = await Promise.allSettled(tasks);
     let meanings = settled.map((r) => r.status === 'fulfilled' ? cleanMeaning(r.value, word) : '').filter(Boolean);
     if (!meanings.length && definitions.length) {
@@ -854,6 +896,15 @@ h1,h2,h3,h4,p{margin:0}
     return posList.slice(0, 3).map((pos) => `${base} (${pos})`);
   }
 
+  function publishLookup(next, key, seq) {
+    if (seq !== lookupSeq || wordKey($('word').value) !== key) return false;
+    lookup = {...lookup, ...next, status:'ready', loading:Boolean(next.loading), error:''};
+    lookupCache[key] = lookup;
+    saveLookupCache();
+    renderRecord();
+    return true;
+  }
+
   async function lookupWord(manual = true) {
     const word = tidy($('word').value);
     if (!word) return;
@@ -871,7 +922,11 @@ h1,h2,h3,h4,p{margin:0}
     const seq = ++lookupSeq;
     lookup = {...blankLookup(word), meanings:fastMeanings, related:relatedWords(word), loading:true, status:'loading'};
     renderRecord();
-    const directMeanings = fastMeanings.length ? Promise.resolve([]) : translateMeanings(word, [], signal);
+    const meaningTask = fastMeanings.length ? Promise.resolve(fastMeanings) : translateMeanings(word, [], signal);
+    meaningTask.then((meanings) => {
+      const nextMeanings = [...new Set([...(lookup.meanings || []), ...meanings].map(tidy).filter(Boolean))].slice(0, 8);
+      if (nextMeanings.length) publishLookup({word, meanings:nextMeanings, source:'youdao', loading:false, lastLookupAt:new Date().toISOString()}, key, seq);
+    }).catch(() => {});
     try {
       const entries = await fetchJson(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`, signal, 6000);
       if (seq !== lookupSeq) return;
@@ -881,23 +936,20 @@ h1,h2,h3,h4,p{margin:0}
       const ipa = tidy(us.text || entry.phonetic || phonetics.find((p) => p.text)?.text || '');
       const pos = tidy(entry.meanings?.[0]?.partOfSpeech || '');
       const definitions = (entry.meanings || []).flatMap((m) => (m.definitions || []).map((d) => d.definition)).map(tidy).filter(Boolean);
-      let meanings = [...fastMeanings, ...await directMeanings];
+      let meanings = [...fastMeanings, ...await meaningTask.catch(() => [])];
       if (!meanings.length) meanings = await translateMeanings(word, definitions, signal);
       if (seq !== lookupSeq) return;
-      lookup = {
-        status:'ready', word, pos, ipa, usAudio: tidy(us.audio), source:'auto',
+      publishLookup({
+        word, pos, ipa, usAudio: tidy(us.audio), source:'auto',
         meanings:[...new Set(meanings.map(tidy).filter(Boolean))].slice(0, 8),
         related: relatedWords(word, entries),
         lastLookupAt:new Date().toISOString(),
-        loading:false,error:''
-      };
-      lookupCache[key] = lookup;
-      saveLookupCache();
-      renderRecord();
+        loading:false
+      }, key, seq);
       return;
     } catch (e) {
       if (e.name === 'AbortError') return;
-      const meanings = [...fastMeanings, ...await directMeanings.catch(() => [])];
+      const meanings = [...fastMeanings, ...await meaningTask.catch(() => [])];
       lookup = {...blankLookup(word), status:meanings.length ? 'ready' : 'error', error:meanings.length ? '' : '自动搜索失败，可手动填写。', meanings:[...new Set(meanings.map(tidy).filter(Boolean))].slice(0, 8), related:relatedWords(word), loading:false};
     }
     renderRecord();
@@ -1095,6 +1147,7 @@ h1,h2,h3,h4,p{margin:0}
       if (id === 'lookupBtn') return lookupWord(true);
       if (id === 'applyLookup') return applyLookup();
       if (id === 'speakBtn') return speak(tidy($('word').value), tidy($('usAudio').value));
+      if (id === 'calPrev' || id === 'calNext') return shiftCalendar(id === 'calNext' ? 1 : -1);
       if (id === 'resetStudy') { state.study = {...state.study, step:1, range:'all', date:'', deck:[], answers:{}, graded:false, summary:'按步骤开始。', startedAt:''}; saveNow(); return renderStudy(); }
       if (id === 'gradeBtn') return grade();
       const sort = e.target.closest('[data-sort]'); if (sort) { state.sort = sort.dataset.sort; saveNow(); return renderHistory(); }
@@ -1178,6 +1231,7 @@ h1,h2,h3,h4,p{margin:0}
   function init() {
     if (!state.page) state.page = 'home';
     if (!state.sort) state.sort = 'time';
+    markTodayOpen();
     renderShell();
     wire();
     if (!state.selectedId && state.records[0]) state.selectedId = state.records[0].id;
