@@ -673,7 +673,7 @@ h1,h2,h3,h4,p{margin:0}
       lookup.ipa ? `<span class="chip">${esc(lookup.ipa)}</span>` : '',
       lookup.usAudio ? `<span class="chip good">美音可读</span>` : ''
     ].join('') || '<span class="chip">暂无</span>';
-    $('lookupMeanings').innerHTML = lookup.meanings.length ? lookup.meanings.map((m) => `<span class="chip gold" data-fill-meaning="${esc(m)}">${esc(m)}</span>`).join('') : '<span class="chip">暂无中文译</span>';
+    $('lookupMeanings').innerHTML = lookup.meanings.length ? lookup.meanings.map((m) => `<span class="chip gold" data-fill-meaning="${esc(m)}">${esc(m)}</span>`).join('') : `<span class="chip">${lookup.loading ? '正在获取中文译' : '暂无中文译'}</span>`;
     $('lookupRelated').innerHTML = lookup.related.length ? lookup.related.map((m) => `<span class="chip" data-fill-related="${esc(m)}">${esc(m)}</span>`).join('') : '<span class="chip">暂无相关词</span>';
   }
 
@@ -761,22 +761,81 @@ h1,h2,h3,h4,p{margin:0}
     $('usAudio').value = r?.usAudio || '';
   }
 
-  async function fetchJson(url, signal) {
-    const res = await fetch(url, {signal});
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.json();
+  async function fetchJson(url, signal, timeoutMs = 7000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const abort = () => controller.abort();
+    if (signal) signal.addEventListener('abort', abort, {once:true});
+    try {
+      const res = await fetch(url, {signal:controller.signal, cache:'no-store'});
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    } finally {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', abort);
+    }
   }
 
-  async function translate(text, signal) {
+  async function translateGoogle(text, signal) {
     const raw = tidy(text);
     if (!raw) return '';
     try {
-      const data = await fetchJson(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-CN&dt=t&q=${encodeURIComponent(raw)}`, signal);
+      const data = await fetchJson(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-CN&dt=t&q=${encodeURIComponent(raw)}`, signal, 5000);
       if (Array.isArray(data?.[0])) return tidy(data[0].map((p) => p?.[0] || '').join(''));
     } catch (e) {
       if (e.name === 'AbortError') throw e;
     }
     return '';
+  }
+
+  async function translateMemory(text, signal) {
+    const raw = tidy(text);
+    if (!raw) return '';
+    try {
+      const data = await fetchJson(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(raw)}&langpair=en|zh-CN`, signal, 5000);
+      const translated = tidy(data?.responseData?.translatedText || '');
+      if (!translated || /^(match not found|no query specified)$/i.test(translated)) return '';
+      return translated;
+    } catch (e) {
+      if (e.name === 'AbortError') throw e;
+    }
+    return '';
+  }
+
+  async function translateYoudao(text, signal) {
+    const raw = tidy(text);
+    if (!raw) return '';
+    try {
+      const data = await fetchJson(`https://dict.youdao.com/suggest?q=${encodeURIComponent(raw)}&num=5&doctype=json`, signal, 4500);
+      const entries = Array.isArray(data?.data?.entries) ? data.data.entries : [];
+      const exact = entries.find((item) => wordKey(item.entry) === wordKey(raw)) || entries[0] || {};
+      return tidy(exact.explain || '');
+    } catch (e) {
+      if (e.name === 'AbortError') throw e;
+    }
+    return '';
+  }
+
+  function cleanMeaning(text, word = '') {
+    let value = tidy(text)
+      .replace(/^["“”'‘’]+|["“”'‘’]+$/g, '')
+      .replace(/\s*[。.]?\s*$/, '');
+    if (/[\u4e00-\u9fff]/.test(value)) value = value.replace(/^(?:[a-z]+\.?\s*)+/i, '').replace(/^[,;；、\s]+/, '');
+    if (!value || /^[a-z][a-z\s-]*$/i.test(value)) return '';
+    if (word && cleanAnswer(value) === cleanAnswer(word)) return '';
+    return value;
+  }
+
+  async function translateMeanings(word, definitions = [], signal) {
+    const tasks = [translateYoudao(word, signal), translateGoogle(word, signal), translateMemory(word, signal)];
+    const settled = await Promise.allSettled(tasks);
+    let meanings = settled.map((r) => r.status === 'fulfilled' ? cleanMeaning(r.value, word) : '').filter(Boolean);
+    if (!meanings.length && definitions.length) {
+      const text = definitions.slice(0, 2).join('; ');
+      const extra = await Promise.allSettled([translateGoogle(text, signal), translateMemory(text, signal)]);
+      meanings = extra.map((r) => r.status === 'fulfilled' ? cleanMeaning(r.value, word) : '').filter(Boolean);
+    }
+    return [...new Set(meanings.flatMap(splitText).map((m) => cleanMeaning(m, word)).filter(Boolean))].slice(0, 8);
   }
 
   function relatedWords(word, entries = []) {
@@ -812,15 +871,19 @@ h1,h2,h3,h4,p{margin:0}
     const seq = ++lookupSeq;
     lookup = {...blankLookup(word), meanings:fastMeanings, related:relatedWords(word), loading:true, status:'loading'};
     renderRecord();
+    const directMeanings = fastMeanings.length ? Promise.resolve([]) : translateMeanings(word, [], signal);
     try {
-      const entries = await fetchJson(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`, signal);
+      const entries = await fetchJson(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`, signal, 6000);
       if (seq !== lookupSeq) return;
       const entry = Array.isArray(entries) ? entries[0] : {};
       const phonetics = Array.isArray(entry.phonetics) ? entry.phonetics : [];
       const us = phonetics.find((p) => /-us\.mp3|us/i.test(p.audio || '') || /US/i.test(p.sourceUrl || '')) || phonetics.find((p) => p.audio) || {};
       const ipa = tidy(us.text || entry.phonetic || phonetics.find((p) => p.text)?.text || '');
       const pos = tidy(entry.meanings?.[0]?.partOfSpeech || '');
-      const meanings = [...fastMeanings];
+      const definitions = (entry.meanings || []).flatMap((m) => (m.definitions || []).map((d) => d.definition)).map(tidy).filter(Boolean);
+      let meanings = [...fastMeanings, ...await directMeanings];
+      if (!meanings.length) meanings = await translateMeanings(word, definitions, signal);
+      if (seq !== lookupSeq) return;
       lookup = {
         status:'ready', word, pos, ipa, usAudio: tidy(us.audio), source:'auto',
         meanings:[...new Set(meanings.map(tidy).filter(Boolean))].slice(0, 8),
@@ -831,19 +894,11 @@ h1,h2,h3,h4,p{margin:0}
       lookupCache[key] = lookup;
       saveLookupCache();
       renderRecord();
-      const textToTranslate = lookup.meanings.length ? '' : word;
-      translate(textToTranslate, signal).then((direct) => {
-        if (seq !== lookupSeq || wordKey($('word').value) !== key) return;
-        const nextMeanings = [...new Set([...lookup.meanings, ...splitText(direct || '')].map(tidy).filter(Boolean))].slice(0, 8);
-        lookup = {...lookup, meanings:nextMeanings, loading:false, status:'ready'};
-        lookupCache[key] = lookup;
-        saveLookupCache();
-        renderRecord();
-      }).catch(() => {});
       return;
     } catch (e) {
       if (e.name === 'AbortError') return;
-      lookup = {...blankLookup(word), status:fastMeanings.length ? 'ready' : 'error', error:fastMeanings.length ? '' : '自动搜索失败，可手动填写。', meanings:fastMeanings, related:relatedWords(word), loading:false};
+      const meanings = [...fastMeanings, ...await directMeanings.catch(() => [])];
+      lookup = {...blankLookup(word), status:meanings.length ? 'ready' : 'error', error:meanings.length ? '' : '自动搜索失败，可手动填写。', meanings:[...new Set(meanings.map(tidy).filter(Boolean))].slice(0, 8), related:relatedWords(word), loading:false};
     }
     renderRecord();
   }
