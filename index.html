@@ -89,7 +89,7 @@ h1,h2,h3,h4,p{margin:0}
 .image-tile.lux{background:linear-gradient(180deg,rgba(5,4,7,.02),rgba(5,4,7,.72)),url("word-atelier-assets/new-gold-crown-grid.jpg") center/cover}
 .image-tile.wave{background:linear-gradient(180deg,rgba(5,4,7,.04),rgba(5,4,7,.76)),url("word-atelier-assets/new-gold-wave.jpg") center/cover}
 .image-tile.sea{background:linear-gradient(180deg,rgba(5,4,7,.06),rgba(5,4,7,.62)),url("word-atelier-assets/final-sidebar-fill.jpg") center 42%/cover}
-.image-tile.side-art{min-height:230px;background:linear-gradient(180deg,rgba(5,4,7,.08),rgba(5,4,7,.48)),url("word-atelier-assets/final-sidebar-fill.jpg") center 46%/cover}
+.image-tile.side-art{min-height:230px;background:linear-gradient(180deg,rgba(5,4,7,.08),rgba(5,4,7,.48)),url("word-atelier-assets/sidebar-night-collage.jpg") center 46%/cover}
 .main-grid{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px;align-items:start}
 .decor{min-height:520px;background:linear-gradient(180deg,rgba(5,4,7,.02),rgba(5,4,7,.72)),url("word-atelier-assets/mood-pink-black.jpg") center/cover}
 .decor.gold{background:linear-gradient(180deg,rgba(5,4,7,.03),rgba(5,4,7,.74)),url("word-atelier-assets/new-gold-luxe-grid.jpg") center/cover}
@@ -133,6 +133,8 @@ h1,h2,h3,h4,p{margin:0}
 .choice-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
 .choice{min-height:110px;border-radius:22px;padding:16px;text-align:left}
 .choice strong{display:block;font-size:20px;margin-bottom:8px}
+.date-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.date-choice{min-height:72px;border-radius:20px;padding:14px;text-align:left}
 .question-card{display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,.7fr);gap:14px;align-items:start}
 .question-card.done{border-color:rgba(96,211,148,.25)}
 .question-card.wrong{border-color:rgba(255,110,140,.3)}
@@ -283,7 +285,7 @@ h1,h2,h3,h4,p{margin:0}
     return {
       page:'home', selectedId:'', editId:'', sort:'time', mistakeSort:'time', search:'',
       records:[], mistakes:[], studyLog:{},
-      study:{step:1, source:'all', order:'time', mode:'cn-en', deck:[], answers:{}, graded:false, right:0, wrong:0, summary:'', startedAt:''}
+      study:{step:1, source:'all', range:'all', date:'', order:'time', mode:'cn-en', deck:[], answers:{}, graded:false, right:0, wrong:0, summary:'', startedAt:''}
     };
   }
 
@@ -542,21 +544,24 @@ h1,h2,h3,h4,p{margin:0}
                   </div>
                 </div>
                 <div class="step" data-step="2">
-                  <h3>选择排列</h3>
+                  <h3>选择测试范围</h3>
                   <div class="choice-grid">
-                    <button class="btn choice primary" data-study-order="time"><strong>按时间</strong><span>最新记录在前。</span></button>
-                    <button class="btn choice" data-study-order="alpha"><strong>按首字母</strong><span>A-Z 排列。</span></button>
-                    <button class="btn choice" data-study-order="all"><strong>全部</strong><span>保留当前顺序。</span></button>
+                    <button class="btn choice primary" data-study-range="all"><strong>全部</strong><span>测试当前范围里的全部单词。</span></button>
+                    <button class="btn choice" data-study-range="date"><strong>选择日期</strong><span>只测试某天记录的单词。</span></button>
                   </div>
                 </div>
                 <div class="step" data-step="3">
+                  <h3>选择日期</h3>
+                  <div class="date-grid" id="studyDateList"></div>
+                </div>
+                <div class="step" data-step="4">
                   <h3>选择方向</h3>
                   <div class="choice-grid">
                     <button class="btn choice primary" data-study-mode="cn-en"><strong>汉译英</strong><span>看中文写英文。</span></button>
                     <button class="btn choice" data-study-mode="en-cn"><strong>英译汉</strong><span>看英文写中文。</span></button>
                   </div>
                 </div>
-                <div class="step" data-step="4">
+                <div class="step" data-step="5">
                   <div class="head">
                     <h3>答题</h3>
                     <button class="btn primary" id="gradeBtn">自动批改</button>
@@ -691,6 +696,14 @@ h1,h2,h3,h4,p{margin:0}
 
   function renderStudy() {
     document.querySelectorAll('.step').forEach((s) => s.classList.toggle('active', Number(s.dataset.step) === Number(state.study.step || 1)));
+    document.querySelectorAll('[data-study-source]').forEach((b) => b.classList.toggle('primary', b.dataset.studySource === state.study.source));
+    document.querySelectorAll('[data-study-range]').forEach((b) => b.classList.toggle('primary', b.dataset.studyRange === state.study.range));
+    document.querySelectorAll('[data-study-mode]').forEach((b) => b.classList.toggle('primary', b.dataset.studyMode === state.study.mode));
+    const dateList = $('studyDateList');
+    if (dateList) {
+      const dates = studyDates();
+      dateList.innerHTML = dates.map((item) => `<button class="btn date-choice ${item.date === state.study.date ? 'primary' : ''}" data-study-date="${esc(item.date)}"><strong>${esc(item.date)}</strong><span>${item.count} 个</span></button>`).join('') || '<div class="empty">当前范围还没有可选日期。</div>';
+    }
     const deck = state.study.deck || [];
     const answers = state.study.answers || {};
     const answered = deck.filter((r) => tidy(answers[r.id])).length;
@@ -890,12 +903,30 @@ h1,h2,h3,h4,p{margin:0}
     return answerOptions(r).some((opt) => opt && (ans === opt || opt.includes(ans) || ans.includes(opt)));
   }
 
+  function studyBaseDeck(includeOrphanMistakes = true) {
+    if (state.study.source !== 'mistakes') return [...state.records];
+    return state.mistakes.map((m) => {
+      const record = state.records.find((r) => wordKey(r.word) === wordKey(m.word));
+      if (record) return record;
+      return includeOrphanMistakes ? normalizeRecord({...m, createdAt:m.createdAt || m.lastWrongAt}) : null;
+    }).filter(Boolean);
+  }
+
+  function studyDates() {
+    const counts = new Map();
+    for (const r of studyBaseDeck(false)) {
+      const date = day(r.createdAt);
+      if (!date) continue;
+      counts.set(date, Number(counts.get(date) || 0) + 1);
+    }
+    return [...counts.entries()].sort((a,b) => b[0].localeCompare(a[0])).map(([date, count]) => ({date, count}));
+  }
+
   function makeDeck() {
-    let deck = state.study.source === 'mistakes'
-      ? state.mistakes.map((m) => state.records.find((r) => wordKey(r.word) === wordKey(m.word)) || normalizeRecord(m))
-      : [...state.records];
-    if (state.study.order === 'time') deck = sortRecords(deck, 'time');
-    if (state.study.order === 'alpha') deck = sortRecords(deck, 'alpha');
+    const dateMode = state.study.range === 'date';
+    let deck = studyBaseDeck(!dateMode);
+    if (dateMode) deck = deck.filter((r) => day(r.createdAt) === state.study.date);
+    deck = sortRecords(deck, 'time');
     const seen = new Set();
     return deck.filter((r) => r.word && !seen.has(r.id) && seen.add(r.id));
   }
@@ -907,9 +938,10 @@ h1,h2,h3,h4,p{margin:0}
     state.study.graded = false;
     state.study.right = 0;
     state.study.wrong = 0;
-    state.study.step = 4;
+    state.study.step = 5;
     state.study.startedAt = new Date().toISOString();
-    state.study.summary = state.study.deck.length ? `共 ${state.study.deck.length} 题。` : '当前没有可学习的词。';
+    const dateText = state.study.range === 'date' && state.study.date ? ` · ${state.study.date}` : '';
+    state.study.summary = state.study.deck.length ? `共 ${state.study.deck.length} 题${dateText}。` : '当前没有可学习的词。';
     saveNow();
     renderStudy();
   }
@@ -1008,12 +1040,38 @@ h1,h2,h3,h4,p{margin:0}
       if (id === 'lookupBtn') return lookupWord(true);
       if (id === 'applyLookup') return applyLookup();
       if (id === 'speakBtn') return speak(tidy($('word').value), tidy($('usAudio').value));
-      if (id === 'resetStudy') { state.study = {...state.study, step:1, deck:[], answers:{}, graded:false, summary:'按步骤开始。', startedAt:''}; saveNow(); return renderStudy(); }
+      if (id === 'resetStudy') { state.study = {...state.study, step:1, range:'all', date:'', deck:[], answers:{}, graded:false, summary:'按步骤开始。', startedAt:''}; saveNow(); return renderStudy(); }
       if (id === 'gradeBtn') return grade();
       const sort = e.target.closest('[data-sort]'); if (sort) { state.sort = sort.dataset.sort; saveNow(); return renderHistory(); }
       const mistakeSort = e.target.closest('[data-mistake-sort]'); if (mistakeSort) { state.mistakeSort = mistakeSort.dataset.mistakeSort; saveNow(); return renderMistakes(); }
-      const source = e.target.closest('[data-study-source]'); if (source) { state.study.source = source.dataset.studySource; state.study.step = 2; saveNow(); return renderStudy(); }
-      const order = e.target.closest('[data-study-order]'); if (order) { state.study.order = order.dataset.studyOrder; state.study.step = 3; saveNow(); return renderStudy(); }
+      const source = e.target.closest('[data-study-source]');
+      if (source) {
+        state.study.source = source.dataset.studySource;
+        state.study.range = 'all';
+        state.study.date = '';
+        state.study.step = 2;
+        state.study.summary = source.dataset.studySource === 'mistakes' ? '已选择错题本。' : '已选择全部单词。';
+        saveNow();
+        return renderStudy();
+      }
+      const range = e.target.closest('[data-study-range]');
+      if (range) {
+        state.study.range = range.dataset.studyRange;
+        state.study.date = '';
+        state.study.step = state.study.range === 'date' ? 3 : 4;
+        state.study.summary = state.study.range === 'date' ? '请选择记录日期。' : '已选择全部测试。';
+        saveNow();
+        return renderStudy();
+      }
+      const studyDate = e.target.closest('[data-study-date]');
+      if (studyDate) {
+        state.study.range = 'date';
+        state.study.date = studyDate.dataset.studyDate;
+        state.study.step = 4;
+        state.study.summary = `已选择 ${state.study.date}。`;
+        saveNow();
+        return renderStudy();
+      }
       const mode = e.target.closest('[data-study-mode]'); if (mode) return startTest(mode.dataset.studyMode);
       const fillM = e.target.closest('[data-fill-meaning]'); if (fillM) { $('meaning').value = fillM.dataset.fillMeaning; return renderRecord(); }
       const fillR = e.target.closest('[data-fill-related]'); if (fillR) { $('related').value = [...splitText($('related').value), fillR.dataset.fillRelated].join('；'); return renderRecord(); }
