@@ -110,6 +110,9 @@ h1,h2,h3,h4,p{margin:0}
 .field input:focus,.field textarea:focus,#historySearch:focus{border-color:rgba(255,193,214,.38);box-shadow:0 0 0 3px rgba(255,120,173,.08)}
 .field input::placeholder,.field textarea::placeholder,#historySearch::placeholder{color:rgba(255,244,238,.48)}
 .field textarea{min-height:104px;resize:vertical}
+.sync-panel{display:grid;gap:9px}
+.sync-panel .field input{padding:10px 12px;border-radius:999px;font-size:12px}
+.sync-status{font-size:12px;color:var(--muted);line-height:1.5}
 .note,.empty{padding:12px 14px;border:1px dashed rgba(255,255,255,.13);background:rgba(255,255,255,.025);border-radius:18px}
 .list{display:grid;gap:10px}
 .card{padding:14px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;position:relative;overflow:hidden}
@@ -154,6 +157,11 @@ h1,h2,h3,h4,p{margin:0}
 (() => {
   const STORAGE = 'word-atelier.clean.v1';
   const CACHE_KEY = 'word-atelier.lookup-cache.v1';
+  const SYNC_KEY = 'word-atelier.github-sync.v1';
+  const SYNC_FILE = 'word-atelier-data.json';
+  const SYNC_OWNER = 'chloe070330';
+  const SYNC_REPO = 'Word-Atelier2';
+  const SYNC_BRANCH = 'main';
   const LEGACY_KEYS = ['word-atelier.redesign.v1','word-atelier.simple.v1','word-atelier.v4','word-atelier.v3'];
   const $ = (id) => document.getElementById(id);
   const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
@@ -281,6 +289,9 @@ h1,h2,h3,h4,p{margin:0}
   let state = loadState();
   let lookupCache = loadLookupCache();
   let lookup = blankLookup();
+  let syncConfig = loadSyncConfig();
+  let syncBusy = false;
+  let syncStatus = '未开启云同步';
   let saveTimer = 0;
   let lookupTimer = 0;
   let lookupSeq = 0;
@@ -381,8 +392,159 @@ h1,h2,h3,h4,p{margin:0}
     localStorage.setItem(CACHE_KEY, JSON.stringify(lookupCache));
   }
 
+  function loadSyncConfig() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(SYNC_KEY) || '{}');
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function saveSyncConfig() {
+    localStorage.setItem(SYNC_KEY, JSON.stringify({
+      enabled: Boolean(syncConfig.enabled),
+      token: syncConfig.token || ''
+    }));
+  }
+
   function saveNow() {
     localStorage.setItem(STORAGE, JSON.stringify(state));
+    localStorage.setItem(CACHE_KEY, JSON.stringify(lookupCache));
+    saveSyncConfig();
+  }
+
+  function syncHeaders() {
+    return {
+      Authorization: `Bearer ${syncConfig.token || ''}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'Content-Type': 'application/json'
+    };
+  }
+
+  function syncSnapshot() {
+    return {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      state: {
+        records: state.records,
+        mistakes: state.mistakes,
+        studyLog: state.studyLog,
+        calendarMonth: state.calendarMonth,
+        sort: state.sort,
+        mistakeSort: state.mistakeSort,
+        search: state.search
+      }
+    };
+  }
+
+  function mergeSyncedState(remote) {
+    if (!remote || typeof remote !== 'object') return;
+    const src = remote.state && typeof remote.state === 'object' ? remote.state : remote;
+    if (Array.isArray(src.records)) {
+      const merged = [];
+      const seenIds = new Set();
+      const seenExact = new Set();
+      for (const item of [...state.records, ...src.records]) {
+        const record = normalizeRecord(item);
+        const exact = recordSignature(record);
+        if (seenIds.has(record.id) || seenExact.has(exact)) continue;
+        seenIds.add(record.id);
+        seenExact.add(exact);
+        merged.push(record);
+      }
+      state.records = merged.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+    }
+    if (Array.isArray(src.mistakes)) state.mistakes = mergeMistakes([...state.mistakes, ...src.mistakes]);
+    if (src.studyLog && typeof src.studyLog === 'object') state.studyLog = {...state.studyLog, ...src.studyLog};
+    if (src.calendarMonth) state.calendarMonth = src.calendarMonth;
+    if (src.sort) state.sort = src.sort;
+    if (src.mistakeSort) state.mistakeSort = src.mistakeSort;
+    if (typeof src.search === 'string') state.search = src.search;
+  }
+
+  async function githubRead() {
+    if (!syncConfig.token) throw new Error('请先填 GitHub Token。');
+    const url = `https://api.github.com/repos/${SYNC_OWNER}/${SYNC_REPO}/contents/${encodeURIComponent(SYNC_FILE)}?ref=${encodeURIComponent(SYNC_BRANCH)}`;
+    const res = await fetch(url, {headers: syncHeaders(), cache:'no-store'});
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`GitHub 读取失败 ${res.status}`);
+    return res.json();
+  }
+
+  async function githubWrite(data, sha = '') {
+    if (!syncConfig.token) throw new Error('请先填 GitHub Token。');
+    const url = `https://api.github.com/repos/${SYNC_OWNER}/${SYNC_REPO}/contents/${encodeURIComponent(SYNC_FILE)}`;
+    const body = {
+      message: `sync word atelier ${new Date().toISOString()}`,
+      content: btoa(unescape(encodeURIComponent(JSON.stringify(data, null, 2)))),
+      branch: SYNC_BRANCH
+    };
+    if (sha) body.sha = sha;
+    const res = await fetch(url, {method:'PUT', headers: syncHeaders(), body: JSON.stringify(body)});
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json?.message || `GitHub 写入失败 ${res.status}`);
+    return json;
+  }
+
+  function setSyncStatus(text) {
+    syncStatus = text;
+    const el = $('syncState');
+    if (el) el.textContent = text;
+    const hint = $('syncHint');
+    if (hint) hint.textContent = text;
+  }
+
+  async function syncPull() {
+    if (syncBusy) return;
+    syncBusy = true;
+    try {
+      setSyncStatus('拉取中');
+      const res = await githubRead();
+      if (res?.content) {
+        const raw = decodeURIComponent(escape(atob(res.content.replace(/\n/g, ''))));
+        const remote = JSON.parse(raw);
+        mergeSyncedState(remote);
+        saveNow();
+        renderAll();
+        setSyncStatus('已同步');
+      } else {
+        setSyncStatus('仓库暂无同步文件');
+      }
+    } catch (e) {
+      setSyncStatus(`拉取失败：${e.message || e}`);
+    } finally {
+      syncBusy = false;
+    }
+  }
+
+  async function syncPush() {
+    if (syncBusy) return;
+    syncBusy = true;
+    try {
+      setSyncStatus('上传中');
+      const current = syncSnapshot();
+      const remote = await githubRead();
+      const sha = remote?.sha || '';
+      if (remote?.content) {
+        const raw = decodeURIComponent(escape(atob(remote.content.replace(/\n/g, ''))));
+        mergeSyncedState(JSON.parse(raw));
+      }
+      const merged = syncSnapshot();
+      await githubWrite(merged, sha);
+      saveNow();
+      setSyncStatus('已上传');
+    } catch (e) {
+      setSyncStatus(`上传失败：${e.message || e}`);
+    } finally {
+      syncBusy = false;
+    }
+  }
+
+  async function syncAuto() {
+    if (!syncConfig.enabled || !syncConfig.token) return;
+    await syncPull().catch(() => {});
   }
 
   function scheduleSave() {
@@ -454,6 +616,18 @@ h1,h2,h3,h4,p{margin:0}
             </div>
           </div>
           <div class="panel stack" id="sideStats"></div>
+          <div class="panel stack sync-panel">
+            <div class="head"><h3>云同步</h3><span class="tiny" id="syncState">未连接</span></div>
+            <div class="field">
+              <label>GitHub Token</label>
+              <input id="syncToken" type="password" placeholder="粘贴 personal access token">
+            </div>
+            <div class="toolbar">
+              <button class="btn primary" id="syncPull">拉取</button>
+              <button class="btn" id="syncPush">上传</button>
+            </div>
+            <div class="sync-status" id="syncHint">数据会同步到仓库里的 word-atelier-data.json。</div>
+          </div>
           <div class="image-tile side-art"></div>
         </aside>
         <main class="pages">
@@ -784,6 +958,8 @@ h1,h2,h3,h4,p{margin:0}
     renderStats(); renderHome(); renderHistory(); renderRecord(); renderStudy(); renderMistakes();
     document.querySelectorAll('.page').forEach((p) => p.classList.toggle('active', p.dataset.page === state.page));
     document.querySelectorAll('#nav [data-page]').forEach((b) => b.classList.toggle('active', b.dataset.page === state.page));
+    if ($('syncToken')) $('syncToken').value = syncConfig.token || '';
+    if ($('syncState')) $('syncState').textContent = syncStatus || (syncConfig.enabled ? '已连接' : '未连接');
   }
 
   function clearForm(keepWord = '') {
@@ -1172,6 +1348,8 @@ h1,h2,h3,h4,p{margin:0}
       if (id === 'applyLookup') return applyLookup();
       if (id === 'speakBtn') return speak(tidy($('word').value), tidy($('usAudio').value));
       if (id === 'calPrev' || id === 'calNext') return shiftCalendar(id === 'calNext' ? 1 : -1);
+      if (id === 'syncPull') return syncPull();
+      if (id === 'syncPush') return syncPush();
       if (id === 'resetStudy') { state.study = {...state.study, step:1, range:'all', date:'', deck:[], answers:{}, graded:false, summary:'按步骤开始。', startedAt:''}; saveNow(); return renderStudy(); }
       if (id === 'gradeBtn') return grade();
       const sort = e.target.closest('[data-sort]'); if (sort) { state.sort = sort.dataset.sort; saveNow(); return renderHistory(); }
@@ -1247,6 +1425,12 @@ h1,h2,h3,h4,p{margin:0}
         return renderStudyProgress();
       }
       if (['pos','ipa','meaning','related','usAudio'].includes(e.target.id)) { scheduleSave(); renderRecord(); }
+      if (e.target.id === 'syncToken') {
+        syncConfig.token = e.target.value.trim();
+        syncConfig.enabled = Boolean(syncConfig.token);
+        saveSyncConfig();
+        setSyncStatus(syncConfig.enabled ? '已连接，点击拉取/上传' : '未连接');
+      }
     });
     $('app').addEventListener('change', (e) => {
       if (e.target.id === 'historySearch') state.search = e.target.value;
@@ -1263,6 +1447,7 @@ h1,h2,h3,h4,p{margin:0}
     saveNow();
     window.addEventListener('beforeunload', saveNow);
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveNow(); });
+    syncAuto();
   }
 
   init();
