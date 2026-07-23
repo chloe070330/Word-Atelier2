@@ -177,6 +177,14 @@ h1,h2,h3,h4,p{margin:0}
   const isSingleWord = (v) => /^[A-Za-z][A-Za-z'-]*$/.test(tidy(v));
   const cleanAnswer = (v) => tidy(v).toLowerCase().replace(/[\s·,.;，。；、/|()（）【】\[\]{}<>!?！？'"“”‘’:\-]+/g, '');
   const splitText = (v) => [...new Set(tidy(v).split(/[\n,;；、\/|]+/).map(tidy).filter(Boolean))];
+  const uniqueClean = (list, limit = 8) => [...new Set((list || []).map(tidy).filter(Boolean))].slice(0, limit);
+  const hasChinese = (v) => /[\u4e00-\u9fff]/.test(String(v || ''));
+  const compactMeaning = (v, word = '') => cleanMeaning(String(v || '')
+    .replace(/\b(?:n|v|vi|vt|adj|adv|prep|conj|pron|abbr|num|art|int)\.?\s*/gi, '')
+    .replace(/\[[^\]]+\]/g, '')
+    .replace(/\([^)]*\)/g, '')
+    .replace(/（[^）]*）/g, '')
+    .replace(/\s+/g, ' '), word);
   const fmt = (v) => {
     if (!v) return '—';
     const d = new Date(v);
@@ -262,7 +270,27 @@ h1,h2,h3,h4,p{margin:0}
     forget:['忘记','遗忘'],
     improve:['改进','提高'],
     change:['改变','变化'],
-    search:['搜索','查找']
+    search:['搜索','查找'],
+    vary:['变化','改变','不同'],
+    variable:['变量','可变的','易变的'],
+    variation:['变化','变体','差异'],
+    various:['各种各样的','不同的'],
+    variety:['多样性','种类'],
+    us:['美国','我们'],
+    usa:['美国'],
+    uk:['英国'],
+    un:['联合国'],
+    eu:['欧盟'],
+    ai:['人工智能'],
+    api:['应用程序接口'],
+    url:['网址','统一资源定位符'],
+    pdf:['PDF 文档','便携式文档格式'],
+    cpu:['中央处理器'],
+    gpu:['图形处理器'],
+    dna:['脱氧核糖核酸'],
+    html:['超文本标记语言'],
+    css:['层叠样式表'],
+    js:['JavaScript 脚本语言']
   };
 
   const commonFamilies = {
@@ -282,6 +310,11 @@ h1,h2,h3,h4,p{margin:0}
     strong:['strong adj. 强的','strength n. 力量','strongly adv. 强烈地'],
     study:['study v./n. 学习','student n. 学生','studious adj. 好学的'],
     use:['use v./n. 使用','useful adj. 有用的','usefully adv. 有用地','user n. 用户'],
+    vary:['vary v. 变化','variable n./adj. 变量；可变的','variation n. 变化','various adj. 各种各样的','variety n. 多样性'],
+    variable:['vary v. 变化','variable n./adj. 变量；可变的','variation n. 变化','various adj. 各种各样的','variety n. 多样性'],
+    variation:['vary v. 变化','variable n./adj. 变量；可变的','variation n. 变化','various adj. 各种各样的','variety n. 多样性'],
+    various:['vary v. 变化','variable n./adj. 变量；可变的','variation n. 变化','various adj. 各种各样的','variety n. 多样性'],
+    variety:['vary v. 变化','variable n./adj. 变量；可变的','variation n. 变化','various adj. 各种各样的','variety n. 多样性'],
     weak:['weak adj. 弱的','weakness n. 弱点','weakly adv. 虚弱地'],
     write:['write v. 写','writer n. 作者','writing n. 写作','written adj. 写成的']
   };
@@ -1053,44 +1086,67 @@ h1,h2,h3,h4,p{margin:0}
     }
   }
 
-  async function translateYoudao(text, signal) {
+  async function translateYoudaoSuggest(text, signal) {
     const raw = tidy(text);
-    if (!raw) return '';
+    if (!raw) return [];
     try {
-      const type = isSingleWord(raw) ? 'EN2ZH_CN' : 'AUTO';
-      const data = await fetchJson(`https://fanyi.youdao.com/translate?doctype=json&type=${type}&i=${encodeURIComponent(raw)}`, signal, 1500);
-      const chunks = Array.isArray(data?.translateResult) ? data.translateResult.flat().map((item) => tidy(item?.tgt || '')).filter(Boolean) : [];
-      if (chunks.length) return chunks.join(' ');
+      const data = await fetchJson(`https://dict.youdao.com/suggest?num=8&doctype=json&q=${encodeURIComponent(raw)}`, signal, 1000);
+      const entries = Array.isArray(data?.result?.entries) ? data.result.entries : [];
+      const meanings = [];
+      for (const item of entries) {
+        const entry = tidy(item?.entry);
+        const explain = tidy(item?.explain);
+        if (entry && wordKey(entry) !== wordKey(raw)) continue;
+        meanings.push(...splitText(explain).map((v) => compactMeaning(v, raw)));
+      }
+      return uniqueClean(meanings.filter(hasChinese), 8);
     } catch (e) {
       if (e.name === 'AbortError') throw e;
     }
-    return '';
+    return [];
+  }
+
+  async function translateYoudao(text, signal) {
+    const raw = tidy(text);
+    if (!raw) return [];
+    try {
+      const type = isSingleWord(raw) ? 'EN2ZH_CN' : 'AUTO';
+      const data = await fetchJson(`https://fanyi.youdao.com/translate?doctype=json&type=${type}&i=${encodeURIComponent(raw)}`, signal, 1100);
+      const chunks = Array.isArray(data?.translateResult) ? data.translateResult.flat().map((item) => tidy(item?.tgt || '')).filter(Boolean) : [];
+      return uniqueClean(chunks.map((v) => compactMeaning(v, raw)).filter(hasChinese), 4);
+    } catch (e) {
+      if (e.name === 'AbortError') throw e;
+    }
+    return [];
   }
 
   async function translateGoogle(text, signal) {
     const raw = tidy(text);
-    if (!raw) return '';
+    if (!raw) return [];
     try {
-      const data = await fetchJson(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&q=${encodeURIComponent(raw)}`, signal, 1700);
-      if (Array.isArray(data?.[0])) return tidy(data[0].map((p) => p?.[0] || '').join(''));
+      const data = await fetchJson(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&q=${encodeURIComponent(raw)}`, signal, 1100);
+      if (Array.isArray(data?.[0])) {
+        const translated = tidy(data[0].map((p) => p?.[0] || '').join(''));
+        return translated ? [compactMeaning(translated, raw)].filter(hasChinese) : [];
+      }
     } catch (e) {
       if (e.name === 'AbortError') throw e;
     }
-    return '';
+    return [];
   }
 
   async function translateMemory(text, signal) {
     const raw = tidy(text);
-    if (!raw) return '';
+    if (!raw) return [];
     try {
-      const data = await fetchJson(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(raw)}&langpair=en|zh-CN`, signal, 1900);
+      const data = await fetchJson(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(raw)}&langpair=en|zh-CN`, signal, 1300);
       const translated = tidy(data?.responseData?.translatedText || '');
-      if (!translated || /^(match not found|no query specified)$/i.test(translated)) return '';
-      return translated;
+      if (!translated || /^(match not found|no query specified)$/i.test(translated)) return [];
+      return [compactMeaning(translated, raw)].filter(hasChinese);
     } catch (e) {
       if (e.name === 'AbortError') throw e;
     }
-    return '';
+    return [];
   }
 
   function cleanMeaning(text, word = '') {
@@ -1122,34 +1178,65 @@ h1,h2,h3,h4,p{margin:0}
 
   async function translateFast(text, signal) {
     const raw = tidy(text);
-    if (!raw) return '';
+    if (!raw) return [];
     const variants = translationVariants(raw);
-    const tasks = variants.flatMap((variant) => [translateYoudao(variant, signal), translateGoogle(variant, signal), translateMemory(variant, signal)]);
-    const wrapped = tasks.map((task) => task.then((v) => cleanMeaning(v, raw)).then((v) => {
-      if (!v) throw new Error('empty');
-      return v;
-    }));
-    try {
-      return await Promise.any(wrapped);
-    } catch {
-      return '';
-    }
+    const primary = variants.flatMap((variant) => [
+      translateYoudaoSuggest(variant, signal),
+      translateYoudao(variant, signal),
+      translateGoogle(variant, signal)
+    ]);
+    const secondary = isSingleWord(raw) ? [translateMemory(raw, signal)] : [];
+    const settled = await Promise.allSettled([...primary, ...secondary]);
+    const meanings = settled.flatMap((item) => item.status === 'fulfilled' ? item.value : []);
+    return uniqueClean(meanings.map((v) => compactMeaning(v, raw)).filter(hasChinese), 8);
   }
 
   function relatedWords(word, entries = []) {
     const base = wordKey(word);
-    if (!base) return [];
+    if (!base || !isSingleWord(base)) return [];
     const roots = [base];
     if (base.endsWith('iful')) roots.push(base.slice(0, -4) + 'y');
     if (base.endsWith('ifully')) roots.push(base.slice(0, -6) + 'y');
     if (base.endsWith('iness')) roots.push(base.slice(0, -5) + 'y');
+    if (base.endsWith('iable')) roots.push(base.slice(0, -5) + 'y');
+    if (base.endsWith('iable')) roots.push(base.slice(0, -4));
+    if (base.endsWith('ation')) roots.push(base.slice(0, -5) + 'e', base.slice(0, -5) + 'y');
+    if (base.endsWith('iety')) roots.push(base.slice(0, -4) + 'y');
     for (const suffix of ['tion','sion','ment','ness','ity','er','or','ing','ed','ly','ful','ive','able','al']) {
       if (base.endsWith(suffix) && base.length > suffix.length + 2) roots.push(base.slice(0, -suffix.length));
     }
-    const found = roots.map((root) => commonFamilies[root]).find(Boolean);
-    if (found) return found.filter((item) => !item.toLowerCase().startsWith(`${base} `)).slice(0, 6);
+    const found = roots.map((root) => commonFamilies[root]).find(Boolean) ||
+      Object.values(commonFamilies).find((family) => family.some((item) => wordKey(item.split(/\s+/)[0]) === base));
+    if (found) return uniqueClean(found.filter((item) => wordKey(item.split(/\s+/)[0]) !== base), 6);
     const posList = [...new Set((entries?.[0]?.meanings || []).map((m) => m.partOfSpeech).filter(Boolean))];
-    return posList.slice(0, 3).map((pos) => `${base} (${pos})`);
+    const guessed = [];
+    if (!base.endsWith('s')) guessed.push(`${base}s n./v. 复数或三单`);
+    if (!base.endsWith('ed')) guessed.push(`${base}ed adj./v. 过去式或过去分词`);
+    if (!base.endsWith('ing')) guessed.push(`${base}ing n./adj. 动名词或现在分词`);
+    if (!base.endsWith('ly')) guessed.push(`${base}ly adv. 副词`);
+    return uniqueClean([...posList.slice(0, 3).map((pos) => `${base} (${pos})`), ...guessed], 5);
+  }
+
+  async function datamuseFamily(word, signal) {
+    const base = wordKey(word);
+    if (!base || !isSingleWord(base)) return [];
+    const root = base.length > 4 ? base.slice(0, Math.min(5, base.length - 1)) : base;
+    try {
+      const data = await fetchJson(`https://api.datamuse.com/words?sp=${encodeURIComponent(root)}*&md=p&max=24`, signal, 1000);
+      if (!Array.isArray(data)) return [];
+      return uniqueClean(data
+        .map((item) => {
+          const w = wordKey(item?.word);
+          if (!w || w === base || w.length < 3) return '';
+          const tags = Array.isArray(item?.tags) ? item.tags : [];
+          const pos = tags.find((t) => ['n','v','adj','adv'].includes(t)) || '';
+          return pos ? `${w} ${pos}.` : w;
+        })
+        .filter(Boolean), 6);
+    } catch (e) {
+      if (e.name === 'AbortError') throw e;
+    }
+    return [];
   }
 
   function publishLookup(next, key, seq) {
@@ -1180,7 +1267,7 @@ h1,h2,h3,h4,p{margin:0}
     lookup = {...blankLookup(word), meanings:fastMeanings, related:singleWord ? relatedWords(word) : [], loading:true, status:'loading'};
     renderRecord();
     const meaningTask = translateFast(word, signal).then((translated) => {
-      const nextMeanings = [...new Set([...(fastMeanings || []), ...splitText(translated)].map(tidy).filter(Boolean))].slice(0, 8);
+      const nextMeanings = uniqueClean([...(fastMeanings || []), ...(Array.isArray(translated) ? translated : splitText(translated))], 8);
       return nextMeanings;
     }).catch(() => []);
     meaningTask.then((meanings) => {
@@ -1188,19 +1275,33 @@ h1,h2,h3,h4,p{margin:0}
       publishLookup({word, meanings, source:'auto', loading:false, lastLookupAt:new Date().toISOString()}, key, seq);
     }).catch(() => {});
     try {
-      if (!singleWord) return;
-      const entries = await fetchJson(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`, signal, 2200);
+      if (!singleWord) {
+        const meanings = await meaningTask.catch(() => []);
+        if (seq !== lookupSeq) return;
+        lookup = {...lookup, word, meanings, source:'auto', loading:false, status:meanings.length ? 'ready' : 'error', error:meanings.length ? '' : '自动搜索失败，可手动填写。'};
+        lookupCache[key] = lookup;
+        saveLookupCache();
+        renderRecord();
+        return;
+      }
+      const [entriesResult, dmResult, meanings] = await Promise.allSettled([
+        fetchJson(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`, signal, 1400),
+        datamuseFamily(word, signal),
+        meaningTask
+      ]);
       if (seq !== lookupSeq) return;
+      const entries = entriesResult.status === 'fulfilled' ? entriesResult.value : [];
       const entry = Array.isArray(entries) ? entries[0] : {};
       const phonetics = Array.isArray(entry.phonetics) ? entry.phonetics : [];
       const us = phonetics.find((p) => /-us\.mp3|us/i.test(p.audio || '') || /US/i.test(p.sourceUrl || '')) || phonetics.find((p) => p.audio) || {};
       const ipa = tidy(us.text || entry.phonetic || phonetics.find((p) => p.text)?.text || '');
       const pos = tidy(entry.meanings?.[0]?.partOfSpeech || '');
-      const meanings = [...new Set([...(lookup.meanings || []), ...fastMeanings].map(tidy).filter(Boolean))].slice(0, 8);
+      const nextMeanings = uniqueClean([...(lookup.meanings || []), ...fastMeanings, ...(meanings.status === 'fulfilled' ? meanings.value : [])], 8);
+      const related = uniqueClean([...relatedWords(word, entries), ...(dmResult.status === 'fulfilled' ? dmResult.value : [])], 8);
       publishLookup({
         word, pos, ipa, usAudio: tidy(us.audio), source:'auto',
-        meanings,
-        related: relatedWords(word, entries),
+        meanings: nextMeanings,
+        related,
         lastLookupAt:new Date().toISOString(),
         loading:false
       }, key, seq);
@@ -1208,7 +1309,7 @@ h1,h2,h3,h4,p{margin:0}
     } catch (e) {
       if (e.name === 'AbortError') return;
       const meanings = await meaningTask.catch(() => []);
-      lookup = {...blankLookup(word), status:meanings.length ? 'ready' : 'error', error:meanings.length ? '' : '自动搜索失败，可手动填写。', meanings:[...new Set([...(fastMeanings || []), ...meanings].map(tidy).filter(Boolean))].slice(0, 8), related:singleWord ? relatedWords(word) : [], loading:false};
+      lookup = {...blankLookup(word), status:meanings.length ? 'ready' : 'error', error:meanings.length ? '' : '自动搜索失败，可手动填写。', meanings:uniqueClean([...(fastMeanings || []), ...meanings], 8), related:singleWord ? relatedWords(word) : [], loading:false};
     }
     renderRecord();
   }
